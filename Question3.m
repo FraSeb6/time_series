@@ -1,88 +1,155 @@
-% Question 3
-
-TT_gecon = timetable(t_gecon, y_gecon, 'VariableNames', {'GECON'});
-TT_ip    = timetable(t_ip   , log(y_ip) , 'VariableNames', {'IP_log'});         
-
-try
-    log_real_oil = oilp.Real; 
-    TT_oil = timetable(t_oil, log_real_oil, 'VariableNames', {'Oil_logReal'});
-catch
-    real_oil = y_oil ./ y_cpi;
-    TT_oil = timetable(t_oil, log(real_oil), 'VariableNames', {'Oil_logReal'});
+%% Q3 — SVAR (Monthly). Ordering: (1) Global activity, (2) Oil (real, log), (3) IP (log), (4) FFR (level)
+function [isStableFlag, maxRoot] = local_isStable_var(M)
+    K = M.NumSeries; p = M.P;
+    A = zeros(K*p);
+    for i = 1:p
+        Ai = M.AR{i}; if isempty(Ai), Ai = zeros(K); end
+        A(1:K,(i-1)*K+1:i*K) = Ai;
+    end
+    if p > 1, A(K+1:end,1:K*(p-1)) = eye(K*(p-1)); end
+    eigvals = eig(A); maxRoot = max(abs(eigvals)); isStableFlag = maxRoot < 1 - 1e-8;
 end
-TT_ff    = timetable(t_funds, y_funds, 'VariableNames', {'FFR'});                
 
-if all(TT_gecon.GECON > 0, 'omitnan')
-    TT_gecon.GECON = log(TT_gecon.GECON);
-    gecon_name = 'GECON_log';
+function [IRF, t] = local_irf_chol(M, SigmaU, H)
+    K = M.NumSeries; p = M.P;
+    A = cell(p,1);
+    for i = 1:p, Ai = M.AR{i}; if isempty(Ai), Ai = zeros(K); end, A{i} = Ai; end
+    P = chol(SigmaU, 'lower');
+    Theta = cell(H+1,1); Theta{1} = eye(K);
+    for h = 1:H
+        S = zeros(K);
+        for i = 1:min(h,p), S = S + A{i} * Theta{h-i+1}; end
+        Theta{h+1} = S;
+    end
+    IRF = zeros(K,K,H+1);
+    for h = 0:H, IRF(:,:,h+1) = Theta{h+1} * P; end
+    t = 0:H;
+end
+
+
+clc; clear; close all;
+
+%% 1) Read data
+oilp   = readtable('MCOILBRENTEU.xlsx');
+indprod= readtable('IPB50001N.xlsx');
+gecon  = readtable('GECON_indicator.xlsx');
+funds  = readtable('FEDFUNDS.xlsx');
+cpi    = readtable('CPIAUCSL.xlsx');
+
+get_ty = @(T) deal(local_to_datetime(T{:,1}), double(T{:,2}));
+[t_oil,   y_oil]   = get_ty(oilp);
+[t_ip,    y_ip]    = get_ty(indprod);
+[t_gecon, y_gecon] = get_ty(gecon);
+[t_funds, y_funds] = get_ty(funds);
+[t_cpi,   y_cpi]   = get_ty(cpi);
+
+%% 2) Transformations
+real_oil     = y_oil ./ y_cpi;
+log_real_oil = log(real_oil);
+ip_log       = log(y_ip);
+y_gecon = y_gecon(:);
+if all(y_gecon(~isnan(y_gecon)) > 0)
+    gecon_series = log(y_gecon); gecon_name = 'GECON_log';
 else
-    gecon_name = 'GECON_level';
+    gecon_series = y_gecon;      gecon_name = 'GECON_level';
 end
-TT_gecon.Properties.VariableNames = {gecon_name};
+ffr_level = y_funds;
 
-TTall = synchronize(TT_gecon, TT_oil, TT_ip, TT_ff, 'intersection');
+%% 3) Timetables & align (intersection). Order: GECON, OIL, IP, FFR
+TT_gecon = timetable(t_gecon, gecon_series, 'VariableNames', {gecon_name});
+TT_oil   = timetable(t_oil,   log_real_oil,  'VariableNames', {'Oil_logReal'});
+TT_ip    = timetable(t_ip,    ip_log,        'VariableNames', {'IP_log'});
+TT_ff    = timetable(t_funds, ffr_level,     'VariableNames', {'FFR'});
+TTall    = synchronize(TT_gecon, TT_oil, TT_ip, TT_ff, 'intersection');
+Y        = TTall{:,:};
+varNames = TTall.Properties.VariableNames;
 
-Y = TTall{:, [1 2 3 4]};     
-dates = TTall.Properties.RowTimes;
-varNames = {gecon_name, 'Oil_logReal', 'IP_log', 'FFR'};
-
-mask = all(~isnan(Y),2);
-Y = Y(mask,:);
-dates = dates(mask);
-
-maxLag = 12;
-K = size(Y,2);
+%% 4) Lag selection (p=1..12) with AIC/BIC/HQ → choose BIC
+maxLag = 12; K = size(Y,2);
 aicV = NaN(maxLag,1); bicV = NaN(maxLag,1); hqV = NaN(maxLag,1);
-
 for p = 1:maxLag
     Mdl = varm(K, p);
     try
-        [EstMdl, ~, logL, info] = estimate(Mdl, Y, 'Y0', Y(1:p,:)); 
-        kparams = info.NumEstimatedParameters;
-        T = size(Y,1);
+        [~,~,logL,info] = estimate(Mdl, Y, 'Y0', Y(1:p,:));
+        kparams = info.NumEstimatedParameters; T = size(Y,1);
         [aicV(p), bicV(p)] = aicbic(logL, kparams, T);
         hqV(p) = -2*logL + 2*kparams*log(log(T));
     catch
-            continue
     end
 end
-
 [~, p_bic] = min(bicV);
-
-fprintf('\n=== Lag-length selection (1..%d) ===\n', maxLag);
+fprintf('\nLag selection (1..%d)\n', maxLag);
 disp(table((1:maxLag)', aicV, bicV, hqV, 'VariableNames', {'p','AIC','BIC','HQ'}));
-fprintf('-> Scelgo p = %d (BIC minimo)\n', p_bic);
+fprintf('Selected p = %d (BIC)\n', p_bic);
 
-p = p_bic;
-Mdl = varm(K, p);
-[EstMdl, ~, ~, info] = estimate(Mdl, Y, 'Y0', Y(1:p,:)); 
-
-[~, ~, E] = infer(EstMdl, Y);   
-SigmaU = cov(E,1);              
-
-fprintf('\n=== Residual autocorrelation (Ljung–Box, up to 12 lags) ===\n');
+%% 5) Estimate VAR(p), stability, residual LB
+p = p_bic; Mdl = varm(K, p);
+[EstMdl,~,~,info] = estimate(Mdl, Y, 'Y0', Y(1:p,:)); %#ok<NASGU>
+[stableFlag, maxRoot] = local_isStable_var(EstMdl);
+fprintf('\nStability (all eigenvalues < 1): %d | max |root|=%.6f\n', stableFlag, maxRoot);
+E = infer(EstMdl, Y);
+SigmaU = cov(E,1);
+fprintf('\nResidual Ljung–Box (L=12)\n');
 for i = 1:K
     [h,pval] = lbqtest(E(:,i), 'Lags', 12);
-    fprintf('Var %d (%s): h=%d, p=%.4f\n', i, varNames{i}, h, pval);
+    fprintf('%s: h=%d, p=%.4f\n', varNames{i}, h, pval);
 end
 
-P = chol(SigmaU, 'lower');     
-
-horizon = 36;  
-IRF = irf(EstMdl, horizon);    
-
-figure('Name','SVAR IRFs (Cholesky, ordering: GECON, Oil, IP, FFR)');
-tiledlayout(K, K, 'TileSpacing','compact','Padding','compact');
-for j = 1:K              
-    for i = 1:K       
-        nexttile;
-        plot(0:horizon, squeeze(IRF(i,j,:)), 'LineWidth', 1.25); grid on;
-        yline(0,'k-');
-        title(sprintf('Resp %s a shock %s', varNames{i}, varNames{j}));
-        xlabel('mesi'); 
+%% 6) IRF (Cholesky) — full grid
+H = 36;
+[IRF, tvec] = local_irf_chol(EstMdl, SigmaU, H);
+figure('Name','SVAR IRFs (Cholesky ordering)'); tiledlayout(K,K,'TileSpacing','compact','Padding','compact');
+for j = 1:K
+    for i = 1:K
+        nexttile; plot(tvec, squeeze(IRF(i,j,:)), 'LineWidth', 1.25);
+        yline(0,'k-'); grid on;
+        title(sprintf('Resp %s to shock %s', varNames{i}, varNames{j}), 'Interpreter','none'); xlabel('months');
     end
 end
 
+%% 7) Requested IRFs: global activity shock (1) and oil price shock (2)
+shock = 1;
+figure('Name','IRFs — Global activity shock'); tiledlayout(K,1,'TileSpacing','compact','Padding','compact');
+for i = 1:K
+    nexttile; plot(tvec, squeeze(IRF(i,shock,:)), 'LineWidth', 1.5);
+    yline(0,'k-'); grid on; title(sprintf('%s shock → %s', varNames{shock}, varNames{i}), 'Interpreter','none');
+end; xlabel('months');
+
+shock = 2;
+figure('Name','IRFs — Oil price shock'); tiledlayout(K,1,'TileSpacing','compact','Padding','compact');
+for i = 1:K
+    nexttile; plot(tvec, squeeze(IRF(i,shock,:)), 'LineWidth', 1.5);
+    yline(0,'k-'); grid on; title(sprintf('%s shock → %s', varNames{shock}, varNames{i}), 'Interpreter','none');
+end; xlabel('months');
+
+%% 8) Summary
 disp(EstMdl)
-fprintf('\nOrdering (recursive):\n1) %s  2) %s  3) %s  4) %s\n', varNames{1},varNames{2},varNames{3},varNames{4});
-fprintf('Lag scelto p = %d (BIC). Horizon IRF = %d mesi.\n', p, horizon);
+fprintf('\nOrdering:\n  1) %s  2) %s  3) %s  4) %s\n', varNames{1},varNames{2},varNames{3},varNames{4});
+fprintf('Lag p = %d. IRF horizon = %d months.\n', p, H);
+
+%% ===== Local functions =====
+function dt = local_to_datetime(x)
+    if isdatetime(x), dt = x; return; end
+    if isstring(x) || iscellstr(x) || ischar(x)
+        try, dt = datetime(x,'InputFormat','yyyy-MM-dd'); return; end
+        dt = datetime(x); return
+    end
+    if isnumeric(x)
+        try, dt = datetime(x,'ConvertFrom','excel'); return; end
+        dt = datetime(1899,12,30) + days(x); return
+    end
+    error('Unrecognized date format.');
+end
+
+%% IRF — Monetary policy shock (FFR) → Industrial Production (IP_log)
+% use the actual names present in varNames
+shockIdx = find(strcmp(varNames,'FFR'), 1);     if isempty(shockIdx), shockIdx = 4; end
+respIdx  = find(strcmp(varNames,'IP_log'), 1);  if isempty(respIdx),  respIdx  = 3; end
+
+ip_irf = squeeze(IRF(respIdx, shockIdx, :));    % response of IP_log to an FFR shock
+
+figure('Name','IRF: Monetary policy shock on Industrial Production');
+plot(tvec, ip_irf, 'LineWidth', 1.8); grid on; yline(0,'k-');
+xlabel('months');
+ylabel('response (log units ≈ %/100)');
+title('Industrial Production response to a monetary policy shock (FFR → IP)');
