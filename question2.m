@@ -3,7 +3,8 @@ indprod = readtable('IPB50001N.xlsx');
 gecon = readtable('GECON_indicator.xlsx');
 funds = readtable('FEDFUNDS.xlsx');
 cpi = readtable("CPIAUCSL.xlsx");
-Plots
+
+
 t_oil   = oilp{:,1};   y_oil   = oilp{:,2};
 t_ip    = indprod{:,1}; y_ip   = indprod{:,2};
 t_gecon = gecon{:,1};   y_gecon = gecon{:,2};
@@ -28,15 +29,15 @@ nexttile;
 plot(t_gecon, y_gecon, 'LineWidth', 1.5);
 title('GECON Indicator'); grid on;
 sgtitle('Raw Data Series');
-Real oil price
+
 real_oil = oilp{:,2} ./ cpi{:,2};
 oilp.RealOil = real_oil;
-Log variable
+%Log variable
 oilp.Log = log(oilp{:,2}); 
 oilp.Real = log(oilp{ :,3});  
 indprod.Log = log(indprod{:,2});    
 cpi.Log = log(cpi{:,2});        
-ADF test
+%ADF test
 real_oil_log = oilp.Real;
 indprod_log  = indprod.Log;
 
