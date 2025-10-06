@@ -1,0 +1,23 @@
+Univariate time series models: Simulations 
+Parameters :
+mu = 6;          
+phi = 0.9;       
+sigma2 = 3;      
+sigma = sqrt(sigma2);
+T = 500;  
+y = zeros(T,1);
+
+y(1) = mu;
+
+e = sigma * randn(T,1); 
+Process:
+for t = 2:T
+    y(t) = mu + phi*(y(t-1) - mu) + e(t);
+end
+Plot:
+figure;
+plot(y, 'LineWidth', 1.2);
+xlabel('Time');
+ylabel('y_t');
+title('Simulated AR(1) Process');
+grid on;
