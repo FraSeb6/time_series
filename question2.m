@@ -65,3 +65,61 @@ end
 fprintf('  Test statistic: %.4f\n', stat_ip);
 fprintf('  5%% critical value: %.4f\n', cValue_ip);
 fprintf('  p-value: %.4f\n', p_ip);
+
+%% HP filter sulla Industrial Production (log)
+mask = ~isnan(indprod.Log);
+t_ip_clean   = t_ip(mask);
+ip_log_clean = indprod.Log(mask);
+
+lambda_monthly = 129600;
+
+[hp_trend, hp_cycle] = hpfilter_local(ip_log_clean, lambda_monthly);
+
+indprod.HP_Trend = NaN(size(indprod.Log));
+indprod.HP_Cycle = NaN(size(indprod.Log));
+indprod.HP_Trend(mask) = hp_trend;
+indprod.HP_Cycle(mask) = hp_cycle;
+
+figure;
+tiledlayout(2,1,'TileSpacing','compact','Padding','compact');
+
+nexttile;
+plot(t_ip, indprod.Log, 'LineWidth', 1.2); hold on;
+plot(t_ip_clean, hp_trend, 'LineWidth', 1.8);
+title(sprintf('Industrial Production (log) e HP-Trend (\\lambda = %d)', lambda_monthly));
+legend('Log IP','HP Trend','Location','best'); grid on; hold off;
+
+nexttile;
+plot(t_ip_clean, hp_cycle, 'LineWidth', 1.5); yline(0,'k-'); grid on;
+title('Ciclo HP della Industrial Production'); xlabel('Data');
+
+lambdas = [50000, 129600, 300000];
+cycles = NaN(numel(ip_log_clean), numel(lambdas));
+for j = 1:numel(lambdas)
+    [tr_j, cy_j] = hpfilter_local(ip_log_clean, lambdas(j));
+    cycles(:,j) = cy_j;
+end
+
+figure;
+plot(t_ip_clean, cycles, 'LineWidth', 1.2); yline(0,'k-'); grid on;
+legend(arrayfun(@(x) sprintf('\\lambda = %d',x), lambdas,'UniformOutput',false),'Location','best');
+title('Ciclo HP per diverse scelte di \\lambda');
+
+std_cycles = std(cycles,0,1);
+corr_cycles = corr(cycles,'rows','pairwise');
+fprintf('\n=== Sensibilità a lambda (HP ciclo su IP log) ===\n');
+for j = 1:numel(lambdas)
+    fprintf('lambda = %6d | std(cycle) = %.4f\n', lambdas(j), std_cycles(j));
+end
+fprintf('\nCorrelazioni tra cicli (ordine dei lambda):\n');
+disp(corr_cycles);
+
+function [trend, cycle] = hpfilter_local(y, lambda)
+    y = y(:);
+    T = numel(y);
+    I = speye(T);
+    e = ones(T,1);
+    D = spdiags([e -2*e e], 0:2, T-2, T);  
+    trend = (I + lambda*(D'*D)) \ y;
+    cycle = y - trend;
+end
