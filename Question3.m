@@ -37,7 +37,7 @@ TTall    = synchronize(TT_gecon, TT_oil, TT_ip, TT_ff, 'intersection');
 Y        = TTall{:,:};
 varNames = TTall.Properties.VariableNames;
 
-%% 4) Lag selection robusta (p=1..12) — AIC/BIC/HQ calcolati "a mano"
+%% 4) Robust lag selection (p=1..12) — AIC/BIC/HQ computed "by hand"
 maxLag = 12; K = size(Y,2);
 aicV = NaN(maxLag,1); bicV = NaN(maxLag,1); hqV = NaN(maxLag,1);
 for p = 1:maxLag
@@ -58,7 +58,7 @@ for p = 1:maxLag
     end
 end
 valid = find(~isnan(bicV));
-if isempty(valid), warning('Criteri non calcolabili: imposto p=1.'); p_bic = 1;
+if isempty(valid), warning('Criteria cannot be computed: setting p=1.'); p_bic = 1;
 else, [~,ix] = min(bicV(valid)); p_bic = valid(ix); end
 fprintf('\nLag selection (1..%d)\n', maxLag);
 disp(table((1:maxLag)', aicV, bicV, hqV, 'VariableNames', {'p','AIC','BIC','HQ'}));
@@ -89,7 +89,7 @@ for j = 1:K
     end
 end
 
-%% 7) IRF richieste: Global shock (1) e Oil shock (2)
+%% 7) Requested IRFs: Global shock (1) and Oil shock (2)
 shock = 1;
 figure('Name','IRFs — Global activity shock'); tiledlayout(K,1,'TileSpacing','compact','Padding','compact');
 for i = 1:K
