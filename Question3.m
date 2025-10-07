@@ -1,31 +1,4 @@
 %% Q3 — SVAR (Monthly). Ordering: (1) Global activity, (2) Oil (real, log), (3) IP (log), (4) FFR (level)
-function [isStableFlag, maxRoot] = local_isStable_var(M)
-    K = M.NumSeries; p = M.P;
-    A = zeros(K*p);
-    for i = 1:p
-        Ai = M.AR{i}; if isempty(Ai), Ai = zeros(K); end
-        A(1:K,(i-1)*K+1:i*K) = Ai;
-    end
-    if p > 1, A(K+1:end,1:K*(p-1)) = eye(K*(p-1)); end
-    eigvals = eig(A); maxRoot = max(abs(eigvals)); isStableFlag = maxRoot < 1 - 1e-8;
-end
-
-function [IRF, t] = local_irf_chol(M, SigmaU, H)
-    K = M.NumSeries; p = M.P;
-    A = cell(p,1);
-    for i = 1:p, Ai = M.AR{i}; if isempty(Ai), Ai = zeros(K); end, A{i} = Ai; end
-    P = chol(SigmaU, 'lower');
-    Theta = cell(H+1,1); Theta{1} = eye(K);
-    for h = 1:H
-        S = zeros(K);
-        for i = 1:min(h,p), S = S + A{i} * Theta{h-i+1}; end
-        Theta{h+1} = S;
-    end
-    IRF = zeros(K,K,H+1);
-    for h = 0:H, IRF(:,:,h+1) = Theta{h+1} * P; end
-    t = 0:H;
-end
-
 
 clc; clear; close all;
 
@@ -64,27 +37,36 @@ TTall    = synchronize(TT_gecon, TT_oil, TT_ip, TT_ff, 'intersection');
 Y        = TTall{:,:};
 varNames = TTall.Properties.VariableNames;
 
-%% 4) Lag selection (p=1..12) with AIC/BIC/HQ → choose BIC
+%% 4) Lag selection robusta (p=1..12) — AIC/BIC/HQ calcolati "a mano"
 maxLag = 12; K = size(Y,2);
 aicV = NaN(maxLag,1); bicV = NaN(maxLag,1); hqV = NaN(maxLag,1);
 for p = 1:maxLag
-    Mdl = varm(K, p);
     try
-        [~,~,logL,info] = estimate(Mdl, Y, 'Y0', Y(1:p,:));
-        kparams = info.NumEstimatedParameters; T = size(Y,1);
-        [aicV(p), bicV(p)] = aicbic(logL, kparams, T);
-        hqV(p) = -2*logL + 2*kparams*log(log(T));
+        Mdl_p = varm(K, p);
+        Est_p = estimate(Mdl_p, Y, 'Y0', Y(1:p,:));
+        E_p   = infer(Est_p, Y);
+        Teff  = size(E_p,1);
+        Sigma = (E_p' * E_p) / Teff;
+        [U,pd] = chol(Sigma); if pd>0, continue; end
+        logdetSigma = 2*sum(log(diag(U)));
+        logL = -(Teff*K/2)*log(2*pi) - (Teff/2)*logdetSigma - (Teff*K/2);
+        kparams = K*(K*p + 1) + K*(K+1)/2;
+        aicV(p) = -2*logL + 2*kparams;
+        bicV(p) = -2*logL + kparams*log(Teff);
+        hqV(p)  = -2*logL + 2*kparams*log(log(Teff));
     catch
     end
 end
-[~, p_bic] = min(bicV);
+valid = find(~isnan(bicV));
+if isempty(valid), warning('Criteri non calcolabili: imposto p=1.'); p_bic = 1;
+else, [~,ix] = min(bicV(valid)); p_bic = valid(ix); end
 fprintf('\nLag selection (1..%d)\n', maxLag);
 disp(table((1:maxLag)', aicV, bicV, hqV, 'VariableNames', {'p','AIC','BIC','HQ'}));
 fprintf('Selected p = %d (BIC)\n', p_bic);
 
 %% 5) Estimate VAR(p), stability, residual LB
 p = p_bic; Mdl = varm(K, p);
-[EstMdl,~,~,info] = estimate(Mdl, Y, 'Y0', Y(1:p,:)); %#ok<NASGU>
+[EstMdl,~,~,~] = estimate(Mdl, Y, 'Y0', Y(1:p,:));
 [stableFlag, maxRoot] = local_isStable_var(EstMdl);
 fprintf('\nStability (all eigenvalues < 1): %d | max |root|=%.6f\n', stableFlag, maxRoot);
 E = infer(EstMdl, Y);
@@ -107,7 +89,7 @@ for j = 1:K
     end
 end
 
-%% 7) Requested IRFs: global activity shock (1) and oil price shock (2)
+%% 7) IRF richieste: Global shock (1) e Oil shock (2)
 shock = 1;
 figure('Name','IRFs — Global activity shock'); tiledlayout(K,1,'TileSpacing','compact','Padding','compact');
 for i = 1:K
@@ -122,7 +104,15 @@ for i = 1:K
     yline(0,'k-'); grid on; title(sprintf('%s shock → %s', varNames{shock}, varNames{i}), 'Interpreter','none');
 end; xlabel('months');
 
-%% 8) Summary
+%% 8) IRF — Monetary policy shock (FFR) → Industrial Production (IP_log)
+shockIdx = find(strcmp(varNames,'FFR'), 1);     if isempty(shockIdx), shockIdx = 4; end
+respIdx  = find(strcmp(varNames,'IP_log'), 1);  if isempty(respIdx),  respIdx  = 3; end
+ip_irf = squeeze(IRF(respIdx, shockIdx, :));
+figure('Name','IRF: Monetary policy shock on Industrial Production');
+plot(tvec, ip_irf, 'LineWidth', 1.8); grid on; yline(0,'k-');
+xlabel('months'); ylabel('log points'); title('FFR shock → IP');
+
+%% 9) Summary
 disp(EstMdl)
 fprintf('\nOrdering:\n  1) %s  2) %s  3) %s  4) %s\n', varNames{1},varNames{2},varNames{3},varNames{4});
 fprintf('Lag p = %d. IRF horizon = %d months.\n', p, H);
@@ -141,15 +131,29 @@ function dt = local_to_datetime(x)
     error('Unrecognized date format.');
 end
 
-%% IRF — Monetary policy shock (FFR) → Industrial Production (IP_log)
-% use the actual names present in varNames
-shockIdx = find(strcmp(varNames,'FFR'), 1);     if isempty(shockIdx), shockIdx = 4; end
-respIdx  = find(strcmp(varNames,'IP_log'), 1);  if isempty(respIdx),  respIdx  = 3; end
+function [isStableFlag, maxRoot] = local_isStable_var(M)
+    K = M.NumSeries; p = M.P;
+    A = zeros(K*p);
+    for i = 1:p
+        Ai = M.AR{i}; if isempty(Ai), Ai = zeros(K); end
+        A(1:K,(i-1)*K+1:i*K) = Ai;
+    end
+    if p > 1, A(K+1:end,1:K*(p-1)) = eye(K*(p-1)); end
+    eigvals = eig(A); maxRoot = max(abs(eigvals)); isStableFlag = maxRoot < 1 - 1e-8;
+end
 
-ip_irf = squeeze(IRF(respIdx, shockIdx, :));    % response of IP_log to an FFR shock
-
-figure('Name','IRF: Monetary policy shock on Industrial Production');
-plot(tvec, ip_irf, 'LineWidth', 1.8); grid on; yline(0,'k-');
-xlabel('months');
-ylabel('response (log units ≈ %/100)');
-title('Industrial Production response to a monetary policy shock (FFR → IP)');
+function [IRF, t] = local_irf_chol(M, SigmaU, H)
+    K = M.NumSeries; p = M.P;
+    A = cell(p,1);
+    for i = 1:p, Ai = M.AR{i}; if isempty(Ai), Ai = zeros(K); end, A{i} = Ai; end
+    P = chol(SigmaU, 'lower');
+    Theta = cell(H+1,1); Theta{1} = eye(K);
+    for h = 1:H
+        S = zeros(K);
+        for i = 1:min(h,p), S = S + A{i} * Theta{h-i+1}; end
+        Theta{h+1} = S;
+    end
+    IRF = zeros(K,K,H+1);
+    for h = 0:H, IRF(:,:,h+1) = Theta{h+1} * P; end
+    t = 0:H;
+end
