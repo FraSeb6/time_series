@@ -96,12 +96,12 @@ tiledlayout(2,1,'TileSpacing','compact','Padding','compact');
 nexttile;
 plot(t_ip, indprod.Log, 'LineWidth', 1.2); hold on;
 plot(t_ip_clean, hp_trend, 'LineWidth', 1.8);
-title(sprintf('Industrial Production (log) e HP-Trend (\\lambda = %d)', lambda_monthly));
+title(sprintf('Industrial Production (log) and HP Trend (\\lambda = %d)', lambda_monthly));
 legend('Log IP','HP Trend','Location','best'); grid on; hold off;
 
 nexttile;
 plot(t_ip_clean, hp_cycle, 'LineWidth', 1.5); yline(0,'k-'); grid on;
-title('Ciclo HP della Industrial Production'); xlabel('Data');
+title('HP Cycle of Industrial Production'); xlabel('Date');
 
 %% === Sensitivity to lambda ===
 lambdas = [50000, 129600, 300000];
@@ -114,7 +114,7 @@ end
 figure;
 plot(t_ip_clean, cycles, 'LineWidth', 1.2); yline(0,'k-'); grid on;
 legend(arrayfun(@(x) sprintf('\\lambda = %d',x), lambdas,'UniformOutput',false),'Location','best');
-title('Ciclo HP per diverse scelte di \\lambda');
+title('HP Cycle for Different Choices of \\lambda');
 
 % Summary stats for sensitivity exercise
 std_cycles = std(cycles,0,1);
